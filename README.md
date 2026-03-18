@@ -4,11 +4,11 @@ Cli rule34 fetching tool
 I added an aur repo, but I can't guarantee it'll work right away `yay goonfetch`
 
 How to use:
-create `config.toml` in `.config/goonfetch/`
+create `config.toml` in `~/.config/goonfetch/`
 
 example:
 ```toml
-# .config/goonfetch/config.toml
+# ~/.config/goonfetch/config.toml
 default = "rule34" # default api supplier
 # get api key from i.e. https://rule34.xxx/index.php?page=account&s=options, after making an account, keep in mind you need a different api key per supplier
 tags = "-ai_generated -video score:>10 -beastiality -loli -rape -webm -scat -young -animated"

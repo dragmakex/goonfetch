@@ -12,6 +12,7 @@ import argparse
 import base64
 import urllib.parse
 from dataclasses import dataclass
+from collections.abc import Mapping
 
 
 def b64(s: str) -> str:
@@ -109,9 +110,46 @@ def render(ro, ma, no_ascii):
         w, h = to_ascii(BytesIO(img_bytes), (int(ma[0]), int(ma[1]-4)), use_bg=True)
     return w,h
 
+def config_path() -> Path:
+    base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    return base / "goonfetch" / "config.toml"
+
+
+def mode_config(cfg: dict, source: str) -> dict | None:
+    if source == "rule34":
+        rule34 = cfg.get("rule34")
+        if isinstance(rule34, Mapping):
+            return dict(rule34)
+
+        # Support the README format where the default provider lives at top level.
+        top_level = {
+            key: value for key, value in cfg.items()
+            if key not in {"default", "e621", "gelbooru", "rule34"} and not isinstance(value, Mapping)
+        }
+        return top_level or None
+
+    conf = cfg.get(source)
+    if isinstance(conf, Mapping):
+        return dict(conf)
+    return None
+
+
+def has_auth(conf: dict, source: str) -> bool:
+    if conf.get("auth"):
+        return True
+    if source == "e621":
+        return bool(conf.get("api_key") and conf.get("login"))
+    return bool(conf.get("api_key") and conf.get("user_id"))
+
+
 def confparse():
     size = shutil.get_terminal_size(fallback=(60, 24))
-    path = Path(user_config_dir("goonfetch")) / "config.toml"
+    path = config_path()
+    if not path.exists():
+        raise FileNotFoundError(
+            f"No configuration file found at {path}. Create ~/.config/goonfetch/config.toml."
+        )
+
     cfg = tomllib.loads(path.read_text())
     parser = argparse.ArgumentParser(description=f"A rule34 fetching tool. Requires a config.toml to exist. For more information go to https://github.com/glacier54/goonfetch")
     parser.add_argument('--max-columns', '-c', type=int, default=size.columns, help='Max character columns. Defaults to terminal width.')
@@ -120,11 +158,12 @@ def confparse():
     parser.add_argument('--mode', choices=["rule34", "e621", "gelbooru"], default=cfg.get("default", "rule34"), help='Set API provider.')
     parser.add_argument('additional_tags', nargs='*', help="Add rule34 tags.")
     args = parser.parse_args()
-    if not path.exists:
-        print("No configuration file detected.")
-        exit
+
+    if not isinstance(args.mode, str):
+        raise ValueError("Invalid 'default' value in config.toml. Expected one of: rule34, e621, gelbooru.")
+
     source = args.mode
-    conf = cfg.get(source)
+    conf = mode_config(cfg, source)
     return conf, args
 
 def main(data, ma, protocol):
@@ -136,6 +175,8 @@ def main(data, ma, protocol):
 if __name__ == '__main__':
     conf, args = confparse()
     if not conf:
+        raise ValueError(f"No config found for mode '{args.mode}' in ~/.config/goonfetch/config.toml.")
+    if not has_auth(conf, args.mode):
         raise ValueError("No auth found. You can create an api-key and find your user id/username in the mode's user settings page.")
     if conf.get('auth'):
         conf.update(urllib.parse.parse_qs(conf['auth']))
