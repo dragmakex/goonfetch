@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import base64
+from contextlib import contextmanager
 from io import BytesIO
 import os
 from pathlib import Path
+import select
 import subprocess
 import sys
 import tempfile
-from time import sleep
+import termios
+from time import monotonic, sleep
+import tty
 from typing import Iterable
 
 from PIL import Image as pillow_image, ImageSequence
@@ -139,32 +143,75 @@ def _finish_animation(rows: int, image_id: int) -> None:
 
 
 
+@contextmanager
+def _raw_stdin_enabled():
+    if not sys.stdin.isatty():
+        yield False
+        return
+
+    fd = sys.stdin.fileno()
+    old_attrs = termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)
+        yield True
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)
+
+
+
+def _quit_requested(stdin_enabled: bool) -> bool:
+    if not stdin_enabled:
+        return False
+    ready, _, _ = select.select([sys.stdin], [], [], 0)
+    if not ready:
+        return False
+    char = sys.stdin.read(1)
+    return char.lower() == "q"
+
+
+
+def _sleep_until_next_frame(delay: float, stdin_enabled: bool) -> bool:
+    deadline = monotonic() + max(delay, 0.02)
+    while monotonic() < deadline:
+        if _quit_requested(stdin_enabled):
+            return True
+        sleep(min(0.02, max(deadline - monotonic(), 0)))
+    return False
+
+
+
 def _play_frames_direct(frames: Iterable[tuple[pillow_image.Image, float]], rc: tuple[int, int]) -> tuple[int, int]:
     last_size = (1, 1)
     reserved = False
     image_id = KITTY_IMAGE_ID
+    iterator = iter(frames)
 
-    try:
-        for frame, delay in frames:
-            prepared, cols, rows = _prepare_frame(frame, rc)
-            if not reserved:
-                _reserve_animation_space(rows)
-                reserved = True
-            last_size = (cols, rows)
-            png_bytes = _encode_png_bytes(prepared)
-            _tty_write("\x1b[u")
-            _kitty_display_png(
-                png_bytes,
-                image_id=image_id,
-                cols=cols,
-                rows=rows,
-                width=prepared.width,
-                height=prepared.height,
-            )
-            sleep(max(delay, 0.02))
-    finally:
-        if reserved:
-            _finish_animation(last_size[1], image_id)
+    with _raw_stdin_enabled() as stdin_enabled:
+        try:
+            for frame, delay in iterator:
+                prepared, cols, rows = _prepare_frame(frame, rc)
+                if not reserved:
+                    _reserve_animation_space(rows)
+                    reserved = True
+                last_size = (cols, rows)
+                png_bytes = _encode_png_bytes(prepared)
+                _tty_write("\x1b[u")
+                _kitty_display_png(
+                    png_bytes,
+                    image_id=image_id,
+                    cols=cols,
+                    rows=rows,
+                    width=prepared.width,
+                    height=prepared.height,
+                )
+                if _sleep_until_next_frame(delay, stdin_enabled):
+                    break
+        finally:
+            close = getattr(iterator, "close", None)
+            if callable(close):
+                close()
+            if reserved:
+                _finish_animation(last_size[1], image_id)
 
     return last_size
 
